@@ -62,10 +62,10 @@ struct ObjectHeader {
 #define DataObject__contents {                                          \
         ObjectHeader object;                                            \
         le64_t hash;                                                    \
-        le64_t next_hash_offset;                                        \
-        le64_t next_field_offset;                                       \
-        le64_t entry_offset; /* the first array entry we store inline */ \
-        le64_t entry_array_offset;                                      \
+        le32_t next_hash_offset;                                        \
+        le32_t next_field_offset;                                       \
+        le32_t entry_offset; /* the first array entry we store inline */ \
+        le32_t entry_array_offset;                                      \
         le64_t n_entries;                                               \
         uint8_t payload[];                                              \
         }
@@ -77,8 +77,8 @@ assert_cc(sizeof(struct DataObject) == sizeof(struct DataObject__packed));
 #define FieldObject__contents {                 \
         ObjectHeader object;                    \
         le64_t hash;                            \
-        le64_t next_hash_offset;                \
-        le64_t head_data_offset;                \
+        le32_t next_hash_offset;                \
+        le32_t head_data_offset;                \
         uint8_t payload[];                      \
 }
 
@@ -87,8 +87,7 @@ struct FieldObject__packed FieldObject__contents _packed_;
 assert_cc(sizeof(struct FieldObject) == sizeof(struct FieldObject__packed));
 
 struct EntryItem {
-        le64_t object_offset;
-        le64_t hash;
+        le32_t object_offset;
 } _packed_;
 
 #define EntryObject__contents { \
@@ -106,8 +105,8 @@ struct EntryObject__packed EntryObject__contents _packed_;
 assert_cc(sizeof(struct EntryObject) == sizeof(struct EntryObject__packed));
 
 struct HashItem {
-        le64_t head_hash_offset;
-        le64_t tail_hash_offset;
+        le32_t head_hash_offset;
+        le32_t tail_hash_offset;
 } _packed_;
 
 struct HashTableObject {
@@ -117,8 +116,8 @@ struct HashTableObject {
 
 struct EntryArrayObject {
         ObjectHeader object;
-        le64_t next_entry_array_offset;
-        le64_t items[];
+        le32_t next_entry_array_offset;
+        le32_t items[];
 } _packed_;
 
 #define TAG_LENGTH (256/8)

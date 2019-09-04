@@ -1298,13 +1298,13 @@ static int journal_file_link_data(
 static int next_hash_offset(
                 JournalFile *f,
                 uint64_t *p,
-                le64_t *next_hash_offset,
+                le32_t *next_hash_offset,
                 uint64_t *depth,
                 le64_t *header_max_depth) {
 
         uint64_t nextp;
 
-        nextp = le64toh(READ_NOW(*next_hash_offset));
+        nextp = le32toh(READ_NOW(*next_hash_offset));
         if (nextp > 0) {
                 if (nextp <= *p) /* Refuse going in loops */
                         return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
@@ -1733,9 +1733,9 @@ uint64_t journal_file_hash_table_n_items(Object *o) {
 }
 
 static int link_entry_into_array(JournalFile *f,
-                                 le64_t *first,
+                                 le32_t *first,
                                  le64_t *idx,
-                                 uint64_t p) {
+                                 uint32_t p) {
         int r;
         uint64_t n = 0, ap = 0, q, i, a, hidx;
         Object *o;
@@ -1775,7 +1775,7 @@ static int link_entry_into_array(JournalFile *f,
                 n = 4;
 
         r = journal_file_append_object(f, OBJECT_ENTRY_ARRAY,
-                                       offsetof(Object, entry_array.items) + n * sizeof(uint64_t),
+                                       offsetof(Object, entry_array.items) + n * sizeof(uint32_t),
                                        &o, &q);
         if (r < 0)
                 return r;
@@ -1807,10 +1807,10 @@ static int link_entry_into_array(JournalFile *f,
 }
 
 static int link_entry_into_array_plus_one(JournalFile *f,
-                                          le64_t *extra,
-                                          le64_t *first,
+                                          le32_t *extra,
+                                          le32_t *first,
                                           le64_t *idx,
-                                          uint64_t p) {
+                                          uint32_t p) {
 
         uint64_t hidx;
         int r;
@@ -1825,7 +1825,7 @@ static int link_entry_into_array_plus_one(JournalFile *f,
         if (hidx == UINT64_MAX)
                 return -EBADMSG;
         if (hidx == 0)
-                *extra = htole64(p);
+                *extra = htole32(p);
         else {
                 le64_t i;
 
@@ -1861,6 +1861,7 @@ static int journal_file_link_entry_item(JournalFile *f, Object *o, uint64_t offs
 
 static int journal_file_link_entry(JournalFile *f, Object *o, uint64_t offset) {
         uint64_t n, i;
+        uint32_t ap;
         int r;
 
         assert(f);
@@ -1874,12 +1875,14 @@ static int journal_file_link_entry(JournalFile *f, Object *o, uint64_t offset) {
         __sync_synchronize();
 
         /* Link up the entry itself */
+        ap = f->header->entry_array_offset;
         r = link_entry_into_array(f,
-                                  &f->header->entry_array_offset,
+                                  &ap,
                                   &f->header->n_entries,
                                   offset);
         if (r < 0)
                 return r;
+        f->header->entry_array_offset = ap;
 
         /* log_debug("=> %s seqnr=%"PRIu64" n_entries=%"PRIu64, f->path, o->entry.seqnum, f->header->n_entries); */
 
@@ -2102,7 +2105,6 @@ int journal_file_append_entry(
                         xor_hash ^= le64toh(o->data.hash);
 
                 items[i].object_offset = htole64(p);
-                items[i].hash = o->data.hash;
         }
 
         /* Order by the position on disk, in order to improve seek
@@ -3818,20 +3820,15 @@ int journal_file_copy_entry(JournalFile *from, JournalFile *to, Object *o, uint6
 
         for (i = 0; i < n; i++) {
                 uint64_t l, h;
-                le64_t le_hash;
                 size_t t;
                 void *data;
                 Object *u;
 
                 q = le64toh(o->entry.items[i].object_offset);
-                le_hash = o->entry.items[i].hash;
 
                 r = journal_file_move_to_object(from, OBJECT_DATA, q, &o);
                 if (r < 0)
                         return r;
-
-                if (le_hash != o->data.hash)
-                        return -EBADMSG;
 
                 l = le64toh(READ_NOW(o->object.size));
                 if (l < offsetof(Object, data.payload))
@@ -3871,7 +3868,6 @@ int journal_file_copy_entry(JournalFile *from, JournalFile *to, Object *o, uint6
                         xor_hash ^= le64toh(u->data.hash);
 
                 items[i].object_offset = htole64(h);
-                items[i].hash = u->data.hash;
 
                 r = journal_file_move_to_object(from, OBJECT_ENTRY, p, &o);
                 if (r < 0)
