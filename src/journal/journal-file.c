@@ -1092,12 +1092,14 @@ static int journal_file_setup_data_hash_table(JournalFile *f) {
         assert(f);
         assert(f->header);
 
-        /* We estimate that we need 1 hash table entry per 768 bytes
+        /* TODO: hand-crafted guess at 384 bytes, because with 32-bit offsets
+           I'm managing to fill up the hash table before the file is full. */
+        /* We estimate that we need 1 hash table entry per 512 bytes
            of journal file and we want to make sure we never get
            beyond 75% fill level. Calculate the hash table size for
            the maximum file size based on these metrics. */
 
-        s = (f->metrics.max_size * 4 / 768 / 3) * sizeof(HashItem);
+        s = (f->metrics.max_size * 4 / 384 / 3) * sizeof(HashItem);
         if (s < DEFAULT_DATA_HASH_TABLE_SIZE)
                 s = DEFAULT_DATA_HASH_TABLE_SIZE;
 
