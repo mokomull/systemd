@@ -85,6 +85,7 @@ typedef struct JournalFile {
         Header *header;
         HashItem *data_hash_table;
         HashItem *field_hash_table;
+        HashItem *trie_hash_table;
 
         uint64_t current_offset;
         uint64_t current_seqnum;
@@ -225,6 +226,8 @@ int journal_file_find_data_object_with_hash(JournalFile *f, const void *data, ui
 int journal_file_find_field_object(JournalFile *f, const void *field, uint64_t size, Object **ret, uint64_t *offset);
 int journal_file_find_field_object_with_hash(JournalFile *f, const void *field, uint64_t size, uint64_t hash, Object **ret, uint64_t *offset);
 
+int journal_file_find_trie_object(JournalFile *f, uint64_t object_offset, uint64_t parent_offset, Object **ret, uint64_t *offset);
+
 void journal_file_reset_location(JournalFile *f);
 void journal_file_save_location(JournalFile *f, Object *o, uint64_t offset);
 int journal_file_compare_locations(JournalFile *af, JournalFile *bf);
@@ -265,6 +268,7 @@ bool journal_file_rotate_suggested(JournalFile *f, usec_t max_file_usec);
 
 int journal_file_map_data_hash_table(JournalFile *f);
 int journal_file_map_field_hash_table(JournalFile *f);
+int journal_file_map_trie_hash_table(JournalFile *f);
 
 static inline bool JOURNAL_FILE_COMPRESS(JournalFile *f) {
         assert(f);

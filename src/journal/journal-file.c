@@ -1199,6 +1199,32 @@ int journal_file_map_field_hash_table(JournalFile *f) {
         return 0;
 }
 
+int journal_file_map_trie_hash_table(JournalFile *f) {
+        uint64_t s, p;
+        void *t;
+        int r;
+
+        assert(f);
+        assert(f->header);
+
+        if (f->trie_hash_table)
+                return 0;
+
+        p = le64toh(f->header->trie_hash_table_offset);
+        s = le64toh(f->header->trie_hash_table_size);
+
+        r = journal_file_move_to(f,
+                                 OBJECT_TRIE_HASH_TABLE,
+                                 true,
+                                 p, s,
+                                 &t, NULL);
+        if (r < 0)
+                return r;
+
+        f->trie_hash_table = t;
+        return 0;
+}
+
 static int journal_file_link_field(
                 JournalFile *f,
                 Object *o,
@@ -1318,6 +1344,53 @@ static int next_hash_offset(
         }
 
         *p = nextp;
+
+        return 0;
+}
+
+static int journal_file_link_trie_node(
+                JournalFile *f,
+                Object *o,
+                uint64_t offset,
+                uint64_t hash) {
+
+        uint64_t p, h, m;
+        int r;
+
+        assert(f);
+        assert(f->header);
+        assert(f->trie_hash_table);
+        assert(o);
+        assert(offset > 0);
+
+        if (o->object.type != OBJECT_TRIE_NODE)
+                return -EINVAL;
+
+        m = le64toh(f->header->trie_hash_table_size) / sizeof(HashItem);
+        if (m <= 0)
+                return -EBADMSG;
+
+        /* This might alter the window we are looking at */
+        o->trie_node.next_hash_offset = 0;
+
+        h = hash % m;
+        p = le64toh(f->trie_hash_table[h].tail_hash_offset);
+        if (p == 0)
+                /* Only entry in the hash table is easy */
+                f->trie_hash_table[h].head_hash_offset = htole64(offset);
+        else {
+                /* Move back to the previous data object, to patch in
+                 * pointer */
+
+                r = journal_file_move_to_object(f, OBJECT_TRIE_NODE, p, &o);
+                if (r < 0)
+                        return r;
+
+                o->trie_node.next_hash_offset = htole64(offset);
+        }
+
+        f->trie_hash_table[h].tail_hash_offset = htole64(offset);
+
         return 0;
 }
 
@@ -1523,6 +1596,64 @@ int journal_file_find_data_object(
                         data, size,
                         journal_file_hash_data(f, data, size),
                         ret, ret_offset);
+}
+
+static uint64_t trie_object_hash(uint64_t object_offset, uint64_t parent_offset) {
+        const le64_t offsets[2] = {object_offset, parent_offset};
+        return jenkins_hash64(offsets, sizeof(offsets));
+}
+
+int journal_file_find_trie_object(
+                JournalFile *f,
+                uint64_t object_offset, uint64_t parent_offset,
+                Object **ret, uint64_t *offset) {
+
+        uint64_t p, h, m;
+        int r;
+        uint64_t hash;
+
+        assert(f);
+        assert(f->header);
+
+        /* If there's no trie hash table, then there's no entry. */
+        if (le64toh(f->header->trie_hash_table_size) <= 0)
+                return 0;
+
+        /* Map the trie hash table, if it isn't mapped yet. */
+        r = journal_file_map_trie_hash_table(f);
+        if (r < 0)
+                return r;
+
+        hash = trie_object_hash(object_offset, parent_offset);
+
+        m = le64toh(f->header->trie_hash_table_size) / sizeof(HashItem);
+        if (m <= 0)
+                return -EBADMSG;
+
+        h = hash % m;
+        p = le64toh(f->trie_hash_table[h].head_hash_offset);
+
+        while (p > 0) {
+                Object *o;
+
+                r = journal_file_move_to_object(f, OBJECT_TRIE_NODE, p, &o);
+                if (r < 0)
+                        return r;
+
+                if (le64toh(o->trie_node.object_offset) == object_offset && le64toh(o->trie_node.parent_offset) == parent_offset) {
+                        if (ret)
+                                *ret = o;
+
+                        if (offset)
+                                *offset = p;
+
+                        return 1;
+                }
+
+                p = le64toh(o->trie_node.next_hash_offset);
+        }
+
+        return 0;
 }
 
 static int journal_file_append_field(
@@ -1859,8 +1990,7 @@ static int journal_file_link_entry_item(JournalFile *f, Object *o, uint64_t offs
                                               offset);
 }
 
-static int journal_file_link_entry(JournalFile *f, Object *o, uint64_t offset) {
-        uint64_t n, i;
+static int journal_file_link_trie_entry(JournalFile *f, Object *o, uint64_t offset) {
         int r;
 
         assert(f);
@@ -1868,7 +1998,7 @@ static int journal_file_link_entry(JournalFile *f, Object *o, uint64_t offset) {
         assert(o);
         assert(offset > 0);
 
-        if (o->object.type != OBJECT_ENTRY)
+        if (o->object.type != OBJECT_TRIE_ENTRY)
                 return -EINVAL;
 
         __sync_synchronize();
@@ -1884,18 +2014,13 @@ static int journal_file_link_entry(JournalFile *f, Object *o, uint64_t offset) {
         /* log_debug("=> %s seqnr=%"PRIu64" n_entries=%"PRIu64, f->path, o->entry.seqnum, f->header->n_entries); */
 
         if (f->header->head_entry_realtime == 0)
-                f->header->head_entry_realtime = o->entry.realtime;
+                f->header->head_entry_realtime = o->trie_entry.realtime;
 
-        f->header->tail_entry_realtime = o->entry.realtime;
-        f->header->tail_entry_monotonic = o->entry.monotonic;
+        f->header->tail_entry_realtime = o->trie_entry.realtime;
+        f->header->tail_entry_monotonic = o->trie_entry.monotonic;
 
         /* Link up the items */
-        n = journal_file_entry_n_items(o);
-        for (i = 0; i < n; i++) {
-                r = journal_file_link_entry_item(f, o, offset, i);
-                if (r < 0)
-                        return r;
-        }
+        /* TODO: all the referenced data objects would go here */
 
         return 0;
 }
@@ -1909,37 +2034,65 @@ static int journal_file_append_entry_internal(
                 uint64_t *seqnum,
                 Object **ret, uint64_t *ret_offset) {
         uint64_t np;
-        uint64_t osize;
+        uint64_t trie_object_offset = 0;
         Object *o;
         int r;
+        unsigned i;
 
         assert(f);
         assert(f->header);
         assert(items || n_items == 0);
         assert(ts);
 
-        osize = offsetof(Object, entry.items) + (n_items * sizeof(EntryItem));
+        /* TODO: I'm not doing anything like trying to hang a TrieEntry off another TrieEntry.  Do I need to? */
 
-        r = journal_file_append_object(f, OBJECT_ENTRY, osize, &o, &np);
+        for (i = 0; i < n_items - 1; i++) {
+                r = journal_file_find_trie_object(f, items[i].object_offset, trie_object_offset, &o, &trie_object_offset);
+                if (r > 0) {
+                        /* ok? */
+                } else if (r == 0) {
+                        uint64_t parent_offset = trie_object_offset;
+                        r = journal_file_append_object(f, OBJECT_TRIE_NODE, sizeof(TrieNodeObject),
+                                        &o, &trie_object_offset);
+                        if (r < 0)
+                                return r;
+
+                        o->trie_node.parent_offset = htole64(parent_offset);
+                        o->trie_node.object_offset = htole64(items[i].object_offset);
+                        o->trie_node.object_hash = htole64(items[i].hash);
+
+                        r = journal_file_link_trie_node(f, o, trie_object_offset,
+                                        trie_object_hash(items[i].object_offset, parent_offset));
+                        if (r < 0)
+                                return r;
+                } else {
+                        return r;
+                }
+        }
+
+        r = journal_file_append_object(f, OBJECT_TRIE_ENTRY, sizeof(TrieEntryObject), &o, &np);
         if (r < 0)
                 return r;
 
-        o->entry.seqnum = htole64(journal_file_entry_seqnum(f, seqnum));
-        memcpy_safe(o->entry.items, items, n_items * sizeof(EntryItem));
-        o->entry.realtime = htole64(ts->realtime);
-        o->entry.monotonic = htole64(ts->monotonic);
-        o->entry.xor_hash = htole64(xor_hash);
+        o->trie_entry.seqnum = htole64(journal_file_entry_seqnum(f, seqnum));
+        o->trie_entry.realtime = htole64(ts->realtime);
+        o->trie_entry.monotonic = htole64(ts->monotonic);
+        o->trie_entry.xor_hash = htole64(xor_hash);
         if (boot_id)
                 f->header->boot_id = *boot_id;
-        o->entry.boot_id = f->header->boot_id;
+        o->trie_entry.boot_id = f->header->boot_id;
+        o->trie_entry.parent_offset = trie_object_offset;
+        o->trie_entry.object_offset = htole64(items[i].object_offset);
+        o->trie_entry.object_hash = htole64(items[i].hash);
 
 #if HAVE_GCRYPT
+        assert(false);
         r = journal_file_hmac_put_object(f, OBJECT_ENTRY, o, np);
         if (r < 0)
                 return r;
 #endif
 
-        r = journal_file_link_entry(f, o, np);
+        r = journal_file_link_trie_entry(f, o, np);
         if (r < 0)
                 return r;
 
