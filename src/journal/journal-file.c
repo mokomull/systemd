@@ -1147,6 +1147,33 @@ static int journal_file_setup_field_hash_table(JournalFile *f) {
         return 0;
 }
 
+static int journal_file_setup_trie_hash_table(JournalFile *f) {
+        uint64_t s, p;
+        Object *o;
+        int r;
+
+        assert(f);
+        assert(f->header);
+
+        /* We use a fixed size hash table for the fields as this
+         * number should grow very slowly only */
+
+        s = DEFAULT_FIELD_HASH_TABLE_SIZE;
+        r = journal_file_append_object(f,
+                                       OBJECT_TRIE_HASH_TABLE,
+                                       offsetof(Object, hash_table.items) + s,
+                                       &o, &p);
+        if (r < 0)
+                return r;
+
+        memzero(o->hash_table.items, s);
+
+        f->header->trie_hash_table_offset = htole64(p + offsetof(Object, hash_table.items));
+        f->header->trie_hash_table_size = htole64(s);
+
+        return 0;
+}
+
 int journal_file_map_data_hash_table(JournalFile *f) {
         uint64_t s, p;
         void *t;
@@ -3717,6 +3744,10 @@ int journal_file_open(
                         goto fail;
 
                 r = journal_file_setup_data_hash_table(f);
+                if (r < 0)
+                        goto fail;
+
+                r = journal_file_setup_trie_hash_table(f);
                 if (r < 0)
                         goto fail;
 
