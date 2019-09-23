@@ -122,19 +122,35 @@ static void init_location(Location *l, LocationType type, JournalFile *f, Object
         assert(IN_SET(type, LOCATION_DISCRETE, LOCATION_SEEK));
         assert(f);
 
-        *l = (Location) {
-                .type = type,
-                .seqnum = le64toh(o->entry.seqnum),
-                .seqnum_id = f->header->seqnum_id,
-                .realtime = le64toh(o->entry.realtime),
-                .monotonic = le64toh(o->entry.monotonic),
-                .boot_id = o->entry.boot_id,
-                .xor_hash = le64toh(o->entry.xor_hash),
-                .seqnum_set = true,
-                .realtime_set = true,
-                .monotonic_set = true,
-                .xor_hash_set = true,
-        };
+        if (o->object.type == OBJECT_TRIE_ENTRY) {
+                *l = (Location){
+                        .type = type,
+                        .seqnum = le64toh(o->trie_entry.seqnum),
+                        .seqnum_id = f->header->seqnum_id,
+                        .realtime = le64toh(o->trie_entry.realtime),
+                        .monotonic = le64toh(o->trie_entry.monotonic),
+                        .boot_id = o->trie_entry.boot_id,
+                        .xor_hash = le64toh(o->trie_entry.xor_hash),
+                        .seqnum_set = true,
+                        .realtime_set = true,
+                        .monotonic_set = true,
+                        .xor_hash_set = true,
+                };
+        } else {
+                *l = (Location){
+                        .type = type,
+                        .seqnum = le64toh(o->entry.seqnum),
+                        .seqnum_id = f->header->seqnum_id,
+                        .realtime = le64toh(o->entry.realtime),
+                        .monotonic = le64toh(o->entry.monotonic),
+                        .boot_id = o->entry.boot_id,
+                        .xor_hash = le64toh(o->entry.xor_hash),
+                        .seqnum_set = true,
+                        .realtime_set = true,
+                        .monotonic_set = true,
+                        .xor_hash_set = true,
+                };
+        }
 }
 
 static void set_location(sd_journal *j, JournalFile *f, Object *o) {
@@ -862,9 +878,14 @@ static int real_journal_next(sd_journal *j, direction_t direction) {
         if (!new_file)
                 return 0;
 
-        r = journal_file_move_to_object(new_file, OBJECT_ENTRY, new_file->current_offset, &o);
+        r = journal_file_move_to_object(new_file, OBJECT_UNUSED, new_file->current_offset, &o);
         if (r < 0)
                 return r;
+
+        if (o->object.type != OBJECT_ENTRY && o->object.type != OBJECT_TRIE_ENTRY)
+                return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "Attempt to real_journal_next to an unknown entry type: %" PRIu64,
+                                       new_file->current_offset);
 
         set_location(j, new_file, o);
 
@@ -924,6 +945,7 @@ _public_ int sd_journal_get_cursor(sd_journal *j, char **cursor) {
         Object *o;
         int r;
         char bid[SD_ID128_STRING_MAX], sid[SD_ID128_STRING_MAX];
+        uint64_t seqnum, monotonic, realtime, xor_hash;
 
         assert_return(j, -EINVAL);
         assert_return(!journal_pid_changed(j), -ECHILD);
@@ -932,19 +954,31 @@ _public_ int sd_journal_get_cursor(sd_journal *j, char **cursor) {
         if (!j->current_file || j->current_file->current_offset <= 0)
                 return -EADDRNOTAVAIL;
 
-        r = journal_file_move_to_object(j->current_file, OBJECT_ENTRY, j->current_file->current_offset, &o);
+        r = journal_file_move_to_object(j->current_file, OBJECT_UNUSED, j->current_file->current_offset, &o);
         if (r < 0)
                 return r;
 
+        if (o->object.type == OBJECT_ENTRY) {
+                sd_id128_to_string(o->entry.boot_id, bid);
+                seqnum = le64toh(o->entry.seqnum);
+                monotonic = le64toh(o->entry.monotonic);
+                realtime = le64toh(o->entry.realtime);
+                xor_hash = le64toh(o->entry.xor_hash);
+        } else if (o->object.type == OBJECT_TRIE_ENTRY) {
+                sd_id128_to_string(o->trie_entry.boot_id, bid);
+                seqnum = le64toh(o->trie_entry.seqnum);
+                monotonic = le64toh(o->trie_entry.monotonic);
+                realtime = le64toh(o->trie_entry.realtime);
+                xor_hash = le64toh(o->trie_entry.xor_hash);
+        } else {
+                return -EBADMSG;
+        }
+
         sd_id128_to_string(j->current_file->header->seqnum_id, sid);
-        sd_id128_to_string(o->entry.boot_id, bid);
 
         if (asprintf(cursor,
                      "s=%s;i=%"PRIx64";b=%s;m=%"PRIx64";t=%"PRIx64";x=%"PRIx64,
-                     sid, le64toh(o->entry.seqnum),
-                     bid, le64toh(o->entry.monotonic),
-                     le64toh(o->entry.realtime),
-                     le64toh(o->entry.xor_hash)) < 0)
+                     sid, seqnum, bid, monotonic, realtime, xor_hash) < 0)
                 return -ENOMEM;
 
         return 0;
@@ -2207,11 +2241,20 @@ _public_ int sd_journal_get_realtime_usec(sd_journal *j, uint64_t *ret) {
         if (f->current_offset <= 0)
                 return -EADDRNOTAVAIL;
 
-        r = journal_file_move_to_object(f, OBJECT_ENTRY, f->current_offset, &o);
+        r = journal_file_move_to_object(f, OBJECT_UNUSED, f->current_offset, &o);
         if (r < 0)
                 return r;
 
-        *ret = le64toh(o->entry.realtime);
+        if (o->object.type == OBJECT_ENTRY) {
+                *ret = le64toh(o->entry.realtime);
+        } else if (o->object.type == OBJECT_TRIE_ENTRY) {
+                *ret = le64toh(o->trie_entry.realtime);
+        } else {
+                return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "Attempt to retrieve realtime for an unknown entry type: %" PRIu64,
+                                       f->current_offset);
+        }
+
         return 0;
 }
 
@@ -2219,6 +2262,8 @@ _public_ int sd_journal_get_monotonic_usec(sd_journal *j, uint64_t *ret, sd_id12
         Object *o;
         JournalFile *f;
         int r;
+        sd_id128_t entry_boot_id;
+        uint64_t entry_monotonic;
 
         assert_return(j, -EINVAL);
         assert_return(!journal_pid_changed(j), -ECHILD);
@@ -2230,12 +2275,24 @@ _public_ int sd_journal_get_monotonic_usec(sd_journal *j, uint64_t *ret, sd_id12
         if (f->current_offset <= 0)
                 return -EADDRNOTAVAIL;
 
-        r = journal_file_move_to_object(f, OBJECT_ENTRY, f->current_offset, &o);
+        r = journal_file_move_to_object(f, OBJECT_UNUSED, f->current_offset, &o);
         if (r < 0)
                 return r;
 
+        if (o->object.type == OBJECT_ENTRY) {
+                entry_monotonic = le64toh(o->entry.monotonic);
+                entry_boot_id = o->entry.boot_id;
+        } else if (o->object.type == OBJECT_TRIE_ENTRY) {
+                entry_monotonic = le64toh(o->trie_entry.monotonic);
+                entry_boot_id = o->trie_entry.boot_id;
+        } else {
+                return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "Attempt to retrieve monotonic for an unknown entry type: %" PRIu64,
+                                       f->current_offset);
+        }
+
         if (ret_boot_id)
-                *ret_boot_id = o->entry.boot_id;
+                *ret_boot_id = entry_boot_id;
         else {
                 sd_id128_t id;
 
@@ -2243,12 +2300,12 @@ _public_ int sd_journal_get_monotonic_usec(sd_journal *j, uint64_t *ret, sd_id12
                 if (r < 0)
                         return r;
 
-                if (!sd_id128_equal(id, o->entry.boot_id))
+                if (!sd_id128_equal(id, entry_boot_id))
                         return -ESTALE;
         }
 
         if (ret)
-                *ret = le64toh(o->entry.monotonic);
+                *ret = entry_monotonic;
 
         return 0;
 }
@@ -2424,6 +2481,7 @@ _public_ int sd_journal_enumerate_data(sd_journal *j, const void **data, size_t 
         le64_t le_hash;
         int r;
         Object *o;
+        ObjectType entry_type;
 
         assert_return(j, -EINVAL);
         assert_return(!journal_pid_changed(j), -ECHILD);
@@ -2437,16 +2495,41 @@ _public_ int sd_journal_enumerate_data(sd_journal *j, const void **data, size_t 
         if (f->current_offset <= 0)
                 return -EADDRNOTAVAIL;
 
-        r = journal_file_move_to_object(f, OBJECT_ENTRY, f->current_offset, &o);
+        r = journal_file_move_to_object(f, OBJECT_UNUSED, f->current_offset, &o);
         if (r < 0)
                 return r;
 
-        n = journal_file_entry_n_items(o);
-        if (j->current_field >= n)
-                return 0;
+        if (o->object.type == OBJECT_ENTRY) {
+                entry_type = OBJECT_ENTRY;
+                n = journal_file_entry_n_items(o);
+                if (j->current_field >= n)
+                        return 0;
 
-        p = le64toh(o->entry.items[j->current_field].object_offset);
-        le_hash = o->entry.items[j->current_field].hash;
+                p = le64toh(o->entry.items[j->current_field].object_offset);
+                le_hash = o->entry.items[j->current_field].hash;
+        } else if (o->object.type == OBJECT_TRIE_ENTRY) {
+                entry_type = OBJECT_TRIE_ENTRY;
+                /* is it OK that I return data items in reverse order here? */
+                if (j->current_field == 0) {
+                        p = le64toh(o->trie_entry.object_offset);
+                        le_hash = o->trie_entry.object_hash;
+                        n = le64toh(o->trie_entry.parent_offset);
+                } else if (j->current_field == UINT64_MAX) {
+                        return 0;
+                } else {
+                        r = journal_file_move_to_object(f, OBJECT_TRIE_NODE, j->current_field, &o);
+                        if (r < 0)
+                                return r;
+                        p = le64toh(o->trie_node.object_offset);
+                        le_hash = o->trie_node.object_hash;
+                        n = le64toh(o->trie_node.parent_offset);
+                }
+        } else {
+                return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "Attempt to enumerate an unknown entry type: %" PRIu64,
+                                       f->current_offset);
+        }
+
         r = journal_file_move_to_object(f, OBJECT_DATA, p, &o);
         if (r < 0)
                 return r;
@@ -2458,7 +2541,19 @@ _public_ int sd_journal_enumerate_data(sd_journal *j, const void **data, size_t 
         if (r < 0)
                 return r;
 
-        j->current_field++;
+        switch (entry_type) {
+        case OBJECT_ENTRY:
+                j->current_field++;
+                break;
+        case OBJECT_TRIE_ENTRY:
+                if (n == 0)
+                        j->current_field = UINT64_MAX;
+                else
+                        j->current_field = n;
+                break;
+        default:
+                assert(false);
+        }
 
         return 1;
 }

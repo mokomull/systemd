@@ -2401,9 +2401,14 @@ found:
         /* Let's cache this item for the next invocation */
         chain_cache_put(f->chain_cache, ci, first, a, le64toh(o->entry_array.items[0]), t, i);
 
-        r = journal_file_move_to_object(f, OBJECT_ENTRY, p, &o);
+        r = journal_file_move_to_object(f, OBJECT_UNUSED, p, &o);
         if (r < 0)
                 return r;
+
+        if (o->object.type != OBJECT_ENTRY && o->object.type != OBJECT_TRIE_ENTRY)
+                return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "Attempt to generic_array_get for an unknown entry type: %" PRIu64,
+                                       p);
 
         if (ret)
                 *ret = o;
@@ -2651,9 +2656,15 @@ found:
         else
                 p = le64toh(array->entry_array.items[i]);
 
-        r = journal_file_move_to_object(f, OBJECT_ENTRY, p, &o);
+        r = journal_file_move_to_object(f, OBJECT_UNUSED, p, &o);
         if (r < 0)
                 return r;
+
+        if (o->object.type != OBJECT_ENTRY && o->object.type != OBJECT_TRIE_ENTRY) {
+                return log_debug_errno(SYNTHETIC_ERRNO(EBADMSG),
+                                       "Attempt to iterate to an unknown entry type: %" PRIu64,
+                                       p);
+        }
 
         if (ret)
                 *ret = o;
@@ -2906,13 +2917,28 @@ void journal_file_reset_location(JournalFile *f) {
 }
 
 void journal_file_save_location(JournalFile *f, Object *o, uint64_t offset) {
+        assert(o->object.type == OBJECT_ENTRY || o->object.type == OBJECT_TRIE_ENTRY);
         f->location_type = LOCATION_SEEK;
         f->current_offset = offset;
-        f->current_seqnum = le64toh(o->entry.seqnum);
-        f->current_realtime = le64toh(o->entry.realtime);
-        f->current_monotonic = le64toh(o->entry.monotonic);
-        f->current_boot_id = o->entry.boot_id;
-        f->current_xor_hash = le64toh(o->entry.xor_hash);
+
+        switch (o->object.type) {
+        case OBJECT_ENTRY:
+                f->current_seqnum = le64toh(o->entry.seqnum);
+                f->current_realtime = le64toh(o->entry.realtime);
+                f->current_monotonic = le64toh(o->entry.monotonic);
+                f->current_boot_id = o->entry.boot_id;
+                f->current_xor_hash = le64toh(o->entry.xor_hash);
+                break;
+        case OBJECT_TRIE_ENTRY:
+                f->current_seqnum = le64toh(o->trie_entry.seqnum);
+                f->current_realtime = le64toh(o->trie_entry.realtime);
+                f->current_monotonic = le64toh(o->trie_entry.monotonic);
+                f->current_boot_id = o->trie_entry.boot_id;
+                f->current_xor_hash = le64toh(o->trie_entry.xor_hash);
+                break;
+        default:
+                assert(false);
+        }
 }
 
 int journal_file_compare_locations(JournalFile *af, JournalFile *bf) {
