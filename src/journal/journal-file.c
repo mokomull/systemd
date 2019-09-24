@@ -1997,16 +1997,13 @@ static int link_entry_into_array_plus_one(JournalFile *f,
         return 0;
 }
 
-static int journal_file_link_entry_item(JournalFile *f, Object *o, uint64_t offset, uint64_t i) {
-        uint64_t p;
+static int journal_file_link_entry_item(JournalFile *f, uint64_t offset, uint64_t data_offset) {
         int r;
-
+        Object *o;
         assert(f);
-        assert(o);
         assert(offset > 0);
 
-        p = le64toh(o->entry.items[i].object_offset);
-        r = journal_file_move_to_object(f, OBJECT_DATA, p, &o);
+        r = journal_file_move_to_object(f, OBJECT_DATA, data_offset, &o);
         if (r < 0)
                 return r;
 
@@ -2017,8 +2014,10 @@ static int journal_file_link_entry_item(JournalFile *f, Object *o, uint64_t offs
                                               offset);
 }
 
-static int journal_file_link_trie_entry(JournalFile *f, Object *o, uint64_t offset) {
+static int journal_file_link_trie_entry(JournalFile *f, Object *o, uint64_t offset,
+                const EntryItem items[], unsigned n_items) {
         int r;
+        unsigned i;
 
         assert(f);
         assert(f->header);
@@ -2047,7 +2046,9 @@ static int journal_file_link_trie_entry(JournalFile *f, Object *o, uint64_t offs
         f->header->tail_entry_monotonic = o->trie_entry.monotonic;
 
         /* Link up the items */
-        /* TODO: all the referenced data objects would go here */
+        for (i = 0; i < n_items; i++) {
+                journal_file_link_entry_item(f, offset, items[i].object_offset);
+        }
 
         return 0;
 }
@@ -2119,7 +2120,7 @@ static int journal_file_append_entry_internal(
                 return r;
 #endif
 
-        r = journal_file_link_trie_entry(f, o, np);
+        r = journal_file_link_trie_entry(f, o, np, items, n_items);
         if (r < 0)
                 return r;
 
