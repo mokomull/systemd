@@ -158,6 +158,13 @@ typedef struct JournalFileOps {
                 struct JournalFile *f,
                 const void *data, uint64_t size, uint64_t hash,
                 Object **ret, uint64_t *ret_offset);
+        int (*find_field_object_with_hash)(
+                struct JournalFile *f,
+                const void *field, uint64_t size, uint64_t hash,
+                Object **ret, uint64_t *ret_offset);
+
+
+        int (*get_cutoff_monotonic_usec)(struct JournalFile *f, sd_id128_t boot_id, usec_t *from, usec_t *to);
 
         Header* (*header)(struct JournalFile *jf);
         bool (*check_sigbus)(struct JournalFile *f);
@@ -213,52 +220,6 @@ typedef struct JournalFile {
         bool defrag_on_close:1;
 } JournalFile;
 
-typedef struct BinaryJournalFile {
-        JournalFile journal_file;
-
-        MMapFileDescriptor *cache_fd;
-
-        mode_t mode;
-
-        int flags;
-        bool compress_xz:1;
-        bool compress_lz4:1;
-        bool compress_zstd:1;
-        bool seal:1;
-        bool keyed_hash:1;
-
-        Header *header;
-        HashItem *data_hash_table;
-
-        JournalMetrics metrics;
-        MMapCache *mmap;
-
-        OrderedHashmap *chain_cache;
-
-        uint64_t compress_threshold_bytes;
-
-#if HAVE_GCRYPT
-        gcry_md_hd_t hmac;
-        bool hmac_running;
-
-        FSSHeader *fss_file;
-        size_t fss_file_size;
-
-        uint64_t fss_start_usec;
-        uint64_t fss_interval_usec;
-
-        void *fsprg_state;
-        size_t fsprg_state_size;
-
-        void *fsprg_seed;
-        size_t fsprg_seed_size;
-#endif
-} BinaryJournalFile;
-
-static inline BinaryJournalFile* journal_file_to_binary(JournalFile *f) {
-        return container_of(f, BinaryJournalFile, journal_file);
-}
-
 static inline Header* journal_file_header(JournalFile *f) {
         return f->ops->header(f);
 }
@@ -281,6 +242,10 @@ int journal_file_open(
                 JournalFile *template,
                 JournalFile **ret);
 
+int journal_file_init_header(Header *h, JournalFile *template);
+int journal_file_refresh_header(JournalFile *f);
+
+int journal_file_set_online(JournalFile *f);
 int journal_file_set_offline(JournalFile *f, bool wait);
 bool journal_file_is_offlining(JournalFile *f);
 JournalFile* journal_file_close(JournalFile *j);

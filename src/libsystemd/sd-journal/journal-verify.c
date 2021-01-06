@@ -13,6 +13,7 @@
 #include "journal-authenticate.h"
 #include "journal-def.h"
 #include "journal-file.h"
+#include "journal-file-binary-internal.h"
 #include "journal-verify.h"
 #include "lookup3.h"
 #include "macro.h"
@@ -415,7 +416,7 @@ static int entry_points_to_data(
         assert(f);
         assert(cache_entry_fd);
 
-        if (!contains_uint64(f->mmap, cache_entry_fd, n_entries, entry_p)) {
+        if (!contains_uint64(f->journal_file.mmap, cache_entry_fd, n_entries, entry_p)) {
                 error(data_p, "Data object references invalid entry at "OFSfmt, entry_p);
                 return -EBADMSG;
         }
@@ -529,7 +530,7 @@ static int verify_data(
                         return -EBADMSG;
                 }
 
-                if (!contains_uint64(f->mmap, cache_entry_array_fd, n_entry_arrays, a)) {
+                if (!contains_uint64(f->journal_file.mmap, cache_entry_array_fd, n_entry_arrays, a)) {
                         error(p, "Invalid array offset "OFSfmt, a);
                         return -EBADMSG;
                 }
@@ -606,7 +607,7 @@ static int verify_hash_table(
                         Object *o;
                         uint64_t next;
 
-                        if (!contains_uint64(f->mmap, cache_data_fd, n_data, p)) {
+                        if (!contains_uint64(f->journal_file.mmap, cache_data_fd, n_data, p)) {
                                 error(p, "Invalid data object at hash entry %"PRIu64" of %"PRIu64, i, n);
                                 return -EBADMSG;
                         }
@@ -695,7 +696,7 @@ static int verify_entry(
                 q = le64toh(o->entry.items[i].object_offset);
                 h = le64toh(o->entry.items[i].hash);
 
-                if (!contains_uint64(f->mmap, cache_data_fd, n_data, q)) {
+                if (!contains_uint64(f->journal_file.mmap, cache_data_fd, n_data, q)) {
                         error(p, "Invalid data object of entry");
                         return -EBADMSG;
                 }
@@ -752,7 +753,7 @@ static int verify_entry_array(
                         return -EBADMSG;
                 }
 
-                if (!contains_uint64(f->mmap, cache_entry_array_fd, n_entry_arrays, a)) {
+                if (!contains_uint64(f->journal_file.mmap, cache_entry_array_fd, n_entry_arrays, a)) {
                         error(a, "Invalid array %"PRIu64" of %"PRIu64, i, n);
                         return -EBADMSG;
                 }
@@ -778,7 +779,7 @@ static int verify_entry_array(
                         }
                         last = p;
 
-                        if (!contains_uint64(f->mmap, cache_entry_fd, n_entries, p)) {
+                        if (!contains_uint64(f->journal_file.mmap, cache_entry_fd, n_entries, p)) {
                                 error(a, "Invalid array entry at %"PRIu64" of %"PRIu64, i, n);
                                 return -EBADMSG;
                         }
@@ -867,19 +868,19 @@ int journal_file_binary_verify(
                 goto fail;
         }
 
-        cache_data_fd = mmap_cache_add_fd(f->mmap, data_fd, PROT_READ|PROT_WRITE);
+        cache_data_fd = mmap_cache_add_fd(f->journal_file.mmap, data_fd, PROT_READ|PROT_WRITE);
         if (!cache_data_fd) {
                 r = log_oom();
                 goto fail;
         }
 
-        cache_entry_fd = mmap_cache_add_fd(f->mmap, entry_fd, PROT_READ|PROT_WRITE);
+        cache_entry_fd = mmap_cache_add_fd(f->journal_file.mmap, entry_fd, PROT_READ|PROT_WRITE);
         if (!cache_entry_fd) {
                 r = log_oom();
                 goto fail;
         }
 
-        cache_entry_array_fd = mmap_cache_add_fd(f->mmap, entry_array_fd, PROT_READ|PROT_WRITE);
+        cache_entry_array_fd = mmap_cache_add_fd(f->journal_file.mmap, entry_array_fd, PROT_READ|PROT_WRITE);
         if (!cache_entry_array_fd) {
                 r = log_oom();
                 goto fail;
@@ -1283,9 +1284,9 @@ int journal_file_binary_verify(
         if (show_progress)
                 flush_progress();
 
-        mmap_cache_free_fd(f->mmap, cache_data_fd);
-        mmap_cache_free_fd(f->mmap, cache_entry_fd);
-        mmap_cache_free_fd(f->mmap, cache_entry_array_fd);
+        mmap_cache_free_fd(f->journal_file.mmap, cache_data_fd);
+        mmap_cache_free_fd(f->journal_file.mmap, cache_entry_fd);
+        mmap_cache_free_fd(f->journal_file.mmap, cache_entry_array_fd);
 
         safe_close(data_fd);
         safe_close(entry_fd);
@@ -1320,13 +1321,13 @@ fail:
                 safe_close(entry_array_fd);
 
         if (cache_data_fd)
-                mmap_cache_free_fd(f->mmap, cache_data_fd);
+                mmap_cache_free_fd(f->journal_file.mmap, cache_data_fd);
 
         if (cache_entry_fd)
-                mmap_cache_free_fd(f->mmap, cache_entry_fd);
+                mmap_cache_free_fd(f->journal_file.mmap, cache_entry_fd);
 
         if (cache_entry_array_fd)
-                mmap_cache_free_fd(f->mmap, cache_entry_array_fd);
+                mmap_cache_free_fd(f->journal_file.mmap, cache_entry_array_fd);
 
         return r;
 }

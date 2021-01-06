@@ -2003,7 +2003,7 @@ static int setup_keys(void) {
 
 static int verify(sd_journal *j) {
         int r = 0;
-        BinaryJournalFile *f;
+        JournalFile *f;
 
         assert(j);
 
@@ -2018,17 +2018,17 @@ static int verify(sd_journal *j) {
                         log_notice("Journal file %s has sealing enabled but verification key has not been passed using --verify-key=.", f->path);
 #endif
 
-                k = journal_file_verify(&f->journal_file, arg_verify_key, &first, &validated, &last, true);
+                k = journal_file_verify(f, arg_verify_key, &first, &validated, &last, true);
                 if (k == -EINVAL)
                         /* If the key was invalid give up right-away. */
                         return k;
                 else if (k < 0)
-                        r = log_warning_errno(k, "FAIL: %s (%m)", f->journal_file.path);
+                        r = log_warning_errno(k, "FAIL: %s (%m)", f->path);
                 else {
                         char a[FORMAT_TIMESTAMP_MAX], b[FORMAT_TIMESTAMP_MAX], c[FORMAT_TIMESPAN_MAX];
-                        log_info("PASS: %s", f->journal_file.path);
+                        log_info("PASS: %s", f->path);
 
-                        if (arg_verify_key && JOURNAL_HEADER_SEALED(f->header)) {
+                        if (arg_verify_key && JOURNAL_HEADER_SEALED(journal_file_header(f))) {
                                 if (validated > 0) {
                                         log_info("=> Validated from %s to %s, final %s entries not sealed.",
                                                  format_timestamp_maybe_utc(a, sizeof(a), first),

@@ -24,6 +24,7 @@
 #include "journal-def.h"
 #include "journal-file.h"
 #include "journal-file-binary.h"
+#include "journal-file-binary-internal.h"
 #include "journal-verify.h"
 #include "lookup3.h"
 #include "memory-util.h"
@@ -36,80 +37,11 @@
 #include "strv.h"
 #include "xattr-util.h"
 
-typedef struct BinaryJournalFile {
-        JournalFile journal_file;
-
-        MMapFileDescriptor *cache_fd;
-
-        bool compress_xz:1;
-        bool compress_lz4:1;
-        bool compress_zstd:1;
-        bool seal:1;
-        bool keyed_hash:1;
-
-        Header *header;
-        HashItem *data_hash_table;
-
-        JournalMetrics metrics;
-
-        OrderedHashmap *chain_cache;
-
-        uint64_t compress_threshold_bytes;
-
-#if HAVE_GCRYPT
-        gcry_md_hd_t hmac;
-        bool hmac_running;
-
-        FSSHeader *fss_file;
-        size_t fss_file_size;
-
-        uint64_t fss_start_usec;
-        uint64_t fss_interval_usec;
-
-        void *fsprg_state;
-        size_t fsprg_state_size;
-
-        void *fsprg_seed;
-        size_t fsprg_seed_size;
-#endif
-} BinaryJournalFile;
-
-static inline BinaryJournalFile* journal_file_to_binary(JournalFile *f) {
-        return container_of(f, BinaryJournalFile, journal_file);
-}
-
 #define DEFAULT_DATA_HASH_TABLE_SIZE (2047ULL*sizeof(HashItem))
 #define DEFAULT_FIELD_HASH_TABLE_SIZE (333ULL*sizeof(HashItem))
 
 #define DEFAULT_COMPRESS_THRESHOLD (512ULL)
 #define MIN_COMPRESS_THRESHOLD (8ULL)
-
-/* This is the minimum journal file size */
-#define JOURNAL_FILE_SIZE_MIN (512 * 1024ULL)             /* 512 KiB */
-
-/* These are the lower and upper bounds if we deduce the max_use value
- * from the file system size */
-#define MAX_USE_LOWER (1 * 1024 * 1024ULL)                /* 1 MiB */
-#define MAX_USE_UPPER (4 * 1024 * 1024 * 1024ULL)         /* 4 GiB */
-
-/* Those are the lower and upper bounds for the minimal use limit,
- * i.e. how much we'll use even if keep_free suggests otherwise. */
-#define MIN_USE_LOW (1 * 1024 * 1024ULL)                  /* 1 MiB */
-#define MIN_USE_HIGH (16 * 1024 * 1024ULL)                /* 16 MiB */
-
-/* This is the upper bound if we deduce max_size from max_use */
-#define MAX_SIZE_UPPER (128 * 1024 * 1024ULL)             /* 128 MiB */
-
-/* This is the upper bound if we deduce the keep_free value from the
- * file system size */
-#define KEEP_FREE_UPPER (4 * 1024 * 1024 * 1024ULL)       /* 4 GiB */
-
-/* This is the keep_free value when we can't determine the system
- * size */
-#define DEFAULT_KEEP_FREE (1024 * 1024ULL)                /* 1 MB */
-
-/* This is the default maximum number of journal files to keep around. */
-#define DEFAULT_N_MAX_FILES 100
 
 /* n_data was the first entry we added after the initial file format design */
 #define HEADER_SIZE_MIN ALIGN64(offsetof(Header, n_data))
@@ -176,15 +108,16 @@ static void journal_file_binary_close(JournalFile *jf) {
 #endif
 }
 
-static int journal_file_init_header(BinaryJournalFile *f, BinaryJournalFile *template) {
+static int journal_file_binary_init_header(BinaryJournalFile *f, BinaryJournalFile *template) {
         Header h = {};
         ssize_t k;
         int r;
 
         assert(f);
 
-        memcpy(h.signature, HEADER_SIGNATURE, 8);
-        h.header_size = htole64(ALIGN64(sizeof(h)));
+        r = journal_file_init_header(&h, template ? &template->journal_file : NULL);
+        if (r < 0)
+                return r;
 
         h.incompatible_flags |= htole32(
                 f->compress_xz * HEADER_INCOMPATIBLE_COMPRESSED_XZ |
@@ -194,16 +127,6 @@ static int journal_file_init_header(BinaryJournalFile *f, BinaryJournalFile *tem
 
         h.compatible_flags = htole32(
                 f->seal * HEADER_COMPATIBLE_SEALED);
-
-        r = sd_id128_randomize(&h.file_id);
-        if (r < 0)
-                return r;
-
-        if (template) {
-                h.seqnum_id = template->header->seqnum_id;
-                h.tail_entry_seqnum = template->header->tail_entry_seqnum;
-        } else
-                h.seqnum_id = h.file_id;
 
         k = pwrite(f->journal_file.fd, &h, sizeof(h), 0);
         if (k < 0)
@@ -989,7 +912,7 @@ static int next_hash_offset(
         return 0;
 }
 
-int journal_file_find_field_object_with_hash(
+static int journal_file_binary_find_field_object_with_hash(
                 JournalFile *jf,
                 const void *field, uint64_t size, uint64_t hash,
                 Object **ret, uint64_t *ret_offset) {
@@ -2438,6 +2361,51 @@ static int journal_file_warn_btrfs(BinaryJournalFile *f) {
         return 1;
 }
 
+static int journal_file_binary_get_cutoff_monotonic_usec(JournalFile *f, sd_id128_t boot_id, usec_t *from, usec_t *to) {
+        Object *o;
+        uint64_t p;
+        int r;
+
+        assert(f);
+        assert(from || to);
+
+        r = find_data_object_by_boot_id(f, boot_id, &o, &p);
+        if (r <= 0)
+                return r;
+
+        if (le64toh(o->data.n_entries) <= 0)
+                return 0;
+
+        if (from) {
+                r = journal_file_move_to_object(f,
+                                                OBJECT_ENTRY,
+                                                le64toh(o->data.entry_offset),
+                                                &o);
+                if (r < 0)
+                        return r;
+
+                *from = le64toh(o->entry.monotonic);
+        }
+
+        if (to) {
+                r = journal_file_move_to_object(f, OBJECT_DATA, p, &o);
+                if (r < 0)
+                        return r;
+
+                r = generic_array_get_plus_one(journal_file_to_binary(f),
+                                               le64toh(o->data.entry_offset),
+                                               le64toh(o->data.entry_array_offset),
+                                               le64toh(o->data.n_entries)-1,
+                                               &o, NULL);
+                if (r <= 0)
+                        return r;
+
+                *to = le64toh(o->entry.monotonic);
+        }
+
+        return 1;
+}
+
 static bool journal_file_binary_rotate_suggested(JournalFile *f, usec_t max_file_usec) {
         Header *header;
 
@@ -2559,6 +2527,8 @@ static const JournalFileOps journal_file_binary_ops = {
         .move_to_entry_by_realtime_for_data = journal_file_binary_move_to_entry_by_realtime_for_data,
         .move_to_entry_by_monotonic_for_data = journal_file_binary_move_to_entry_by_monotonic_for_data,
         .find_data_object_with_hash = journal_file_binary_find_data_object_with_hash,
+        .find_field_object_with_hash = journal_file_binary_find_field_object_with_hash,
+        .get_cutoff_monotonic_usec = journal_file_binary_get_cutoff_monotonic_usec,
         .header = journal_file_binary_header,
         .check_sigbus = journal_file_binary_check_sigbus,
         .post_change = journal_file_binary_post_change,
@@ -2741,7 +2711,7 @@ int journal_file_open_binary(
                 }
 #endif
 
-                r = journal_file_init_header(f, template);
+                r = journal_file_binary_init_header(f, template);
                 if (r < 0)
                         goto fail;
 
