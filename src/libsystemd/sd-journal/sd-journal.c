@@ -111,14 +111,18 @@ static void detach_location(sd_journal *j) {
 }
 
 static void init_location(Location *l, LocationType type, JournalFile *f, Object *o) {
+        Header *header;
+
         assert(l);
         assert(IN_SET(type, LOCATION_DISCRETE, LOCATION_SEEK));
         assert(f);
 
+        header = journal_file_header(f);
+
         *l = (Location) {
                 .type = type,
                 .seqnum = le64toh(o->entry.seqnum),
-                .seqnum_id = f->header->seqnum_id,
+                .seqnum_id = header->seqnum_id,
                 .realtime = le64toh(o->entry.realtime),
                 .monotonic = le64toh(o->entry.monotonic),
                 .boot_id = o->entry.boot_id,
@@ -428,13 +432,19 @@ _public_ void sd_journal_flush_matches(sd_journal *j) {
         detach_location(j);
 }
 
-_pure_ static int compare_with_location(const JournalFile *f, const Location *l, const JournalFile *current_file) {
+_pure_ static int compare_with_location(
+                const JournalFile *f,
+                const Location *l,
+                const JournalFile *current_file) {
+        const Header *header;
         int r;
 
         assert(f);
         assert(l);
         assert(f->location_type == LOCATION_SEEK);
         assert(IN_SET(l->type, LOCATION_DISCRETE, LOCATION_SEEK));
+
+        header = journal_file_header_const(f);
 
         if (l->monotonic_set &&
             sd_id128_equal(f->current_boot_id, l->boot_id) &&
@@ -443,13 +453,13 @@ _pure_ static int compare_with_location(const JournalFile *f, const Location *l,
             l->xor_hash_set &&
             f->current_xor_hash == l->xor_hash &&
             l->seqnum_set &&
-            sd_id128_equal(f->header->seqnum_id, l->seqnum_id) &&
+            sd_id128_equal(header->seqnum_id, l->seqnum_id) &&
             f->current_seqnum == l->seqnum &&
             f != current_file)
                 return 0;
 
         if (l->seqnum_set &&
-            sd_id128_equal(f->header->seqnum_id, l->seqnum_id)) {
+            sd_id128_equal(header->seqnum_id, l->seqnum_id)) {
 
                 r = CMP(f->current_seqnum, l->seqnum);
                 if (r != 0)
@@ -490,6 +500,7 @@ static int next_for_match(
                 Object **ret,
                 uint64_t *offset) {
 
+        Header *header;
         int r;
         uint64_t np = 0;
         Object *n;
@@ -498,12 +509,14 @@ static int next_for_match(
         assert(m);
         assert(f);
 
+        header = journal_file_header(f);
+
         if (m->type == MATCH_DISCRETE) {
                 uint64_t dp, hash;
 
                 /* If the keyed hash logic is used, we need to calculate the hash fresh per file. Otherwise
                  * we can use what we pre-calculated. */
-                if (JOURNAL_HEADER_KEYED_HASH(f->header))
+                if (JOURNAL_HEADER_KEYED_HASH(header))
                         hash = journal_file_hash_data(f, m->data, m->size);
                 else
                         hash = m->hash;
@@ -588,16 +601,19 @@ static int find_location_for_match(
                 Object **ret,
                 uint64_t *offset) {
 
+        Header *header;
         int r;
 
         assert(j);
         assert(m);
         assert(f);
 
+        header = journal_file_header(f);
+
         if (m->type == MATCH_DISCRETE) {
                 uint64_t dp, hash;
 
-                if (JOURNAL_HEADER_KEYED_HASH(f->header))
+                if (JOURNAL_HEADER_KEYED_HASH(header))
                         hash = journal_file_hash_data(f, m->data, m->size);
                 else
                         hash = m->hash;
@@ -612,7 +628,7 @@ static int find_location_for_match(
                         return journal_file_next_entry_for_data(f, NULL, 0, dp, DIRECTION_DOWN, ret, offset);
                 if (j->current_location.type == LOCATION_TAIL)
                         return journal_file_next_entry_for_data(f, NULL, 0, dp, DIRECTION_UP, ret, offset);
-                if (j->current_location.seqnum_set && sd_id128_equal(j->current_location.seqnum_id, f->header->seqnum_id))
+                if (j->current_location.seqnum_set && sd_id128_equal(j->current_location.seqnum_id, header->seqnum_id))
                         return journal_file_move_to_entry_by_seqnum_for_data(f, dp, j->current_location.seqnum, direction, ret, offset);
                 if (j->current_location.monotonic_set) {
                         r = journal_file_move_to_entry_by_monotonic_for_data(f, dp, j->current_location.boot_id, j->current_location.monotonic, direction, ret, offset);
@@ -691,12 +707,15 @@ static int find_location_with_matches(
                 Object **ret,
                 uint64_t *offset) {
 
+        Header *header;
         int r;
 
         assert(j);
         assert(f);
         assert(ret);
         assert(offset);
+
+        header = journal_file_header(f);
 
         if (!j->level0) {
                 /* No matches is simple */
@@ -705,7 +724,7 @@ static int find_location_with_matches(
                         return journal_file_next_entry(f, 0, DIRECTION_DOWN, ret, offset);
                 if (j->current_location.type == LOCATION_TAIL)
                         return journal_file_next_entry(f, 0, DIRECTION_UP, ret, offset);
-                if (j->current_location.seqnum_set && sd_id128_equal(j->current_location.seqnum_id, f->header->seqnum_id))
+                if (j->current_location.seqnum_set && sd_id128_equal(j->current_location.seqnum_id, header->seqnum_id))
                         return journal_file_move_to_entry_by_seqnum(f, j->current_location.seqnum, direction, ret, offset);
                 if (j->current_location.monotonic_set) {
                         r = journal_file_move_to_entry_by_monotonic(f, j->current_location.boot_id, j->current_location.monotonic, direction, ret, offset);
@@ -746,6 +765,7 @@ static int next_with_matches(
 }
 
 static int next_beyond_location(sd_journal *j, JournalFile *f, direction_t direction) {
+        Header *header;
         Object *c;
         uint64_t cp, n_entries;
         int r;
@@ -753,7 +773,9 @@ static int next_beyond_location(sd_journal *j, JournalFile *f, direction_t direc
         assert(j);
         assert(f);
 
-        n_entries = le64toh(f->header->n_entries);
+        header = journal_file_header(f);
+
+        n_entries = le64toh(header->n_entries);
 
         /* If we hit EOF before, we don't need to look into this file again
          * unless direction changed or new entries appeared. */
@@ -919,6 +941,7 @@ _public_ int sd_journal_previous_skip(sd_journal *j, uint64_t skip) {
 
 _public_ int sd_journal_get_cursor(sd_journal *j, char **cursor) {
         Object *o;
+        Header *header;
         int r;
         char bid[SD_ID128_STRING_MAX], sid[SD_ID128_STRING_MAX];
 
@@ -929,11 +952,13 @@ _public_ int sd_journal_get_cursor(sd_journal *j, char **cursor) {
         if (!j->current_file || j->current_file->current_offset <= 0)
                 return -EADDRNOTAVAIL;
 
+        header = journal_file_header(j->current_file);
+
         r = journal_file_move_to_object(j->current_file, OBJECT_ENTRY, j->current_file->current_offset, &o);
         if (r < 0)
                 return r;
 
-        sd_id128_to_string(j->current_file->header->seqnum_id, sid);
+        sd_id128_to_string(header->seqnum_id, sid);
         sd_id128_to_string(o->entry.boot_id, bid);
 
         if (asprintf(cursor,
@@ -1051,6 +1076,7 @@ _public_ int sd_journal_seek_cursor(sd_journal *j, const char *cursor) {
 _public_ int sd_journal_test_cursor(sd_journal *j, const char *cursor) {
         int r;
         Object *o;
+        Header *header;
 
         assert_return(j, -EINVAL);
         assert_return(!journal_pid_changed(j), -ECHILD);
@@ -1058,6 +1084,8 @@ _public_ int sd_journal_test_cursor(sd_journal *j, const char *cursor) {
 
         if (!j->current_file || j->current_file->current_offset <= 0)
                 return -EADDRNOTAVAIL;
+
+        header = journal_file_header(j->current_file);
 
         r = journal_file_move_to_object(j->current_file, OBJECT_ENTRY, j->current_file->current_offset, &o);
         if (r < 0)
@@ -1085,7 +1113,7 @@ _public_ int sd_journal_test_cursor(sd_journal *j, const char *cursor) {
                         k = sd_id128_from_string(item+2, &id);
                         if (k < 0)
                                 return k;
-                        if (!sd_id128_equal(id, j->current_file->header->seqnum_id))
+                        if (!sd_id128_equal(id, header->seqnum_id))
                                 return 0;
                         break;
 
@@ -2904,6 +2932,7 @@ _public_ int sd_journal_enumerate_unique(sd_journal *j, const void **data, size_
 
         for (;;) {
                 JournalFile *of;
+                Header *header;
                 Object *o;
                 const void *odata;
                 size_t ol;
@@ -2975,8 +3004,10 @@ _public_ int sd_journal_enumerate_unique(sd_journal *j, const void **data, size_
                         if (of == j->unique_file)
                                 break;
 
+                        header = journal_file_header(of);
+
                         /* Skip this file it didn't have any fields indexed */
-                        if (JOURNAL_HEADER_CONTAINS(of->header, n_fields) && le64toh(of->header->n_fields) <= 0)
+                        if (JOURNAL_HEADER_CONTAINS(header, n_fields) && le64toh(header->n_fields) <= 0)
                                 continue;
 
                         r = journal_file_find_data_object_with_hash(of, odata, ol, le64toh(o->data.hash), NULL, NULL);
@@ -3043,6 +3074,7 @@ _public_ int sd_journal_enumerate_fields(sd_journal *j, const char **field) {
 
         for (;;) {
                 JournalFile *f, *of;
+                Header *header;
                 uint64_t m;
                 Object *o;
                 size_t sz;
@@ -3058,7 +3090,7 @@ _public_ int sd_journal_enumerate_fields(sd_journal *j, const char **field) {
                         if (r < 0)
                                 return r;
 
-                        m = le64toh(f->header->field_hash_table_size) / sizeof(HashItem);
+                        m = le64toh(journal_file_header(f)->field_hash_table_size) / sizeof(HashItem);
                         for (;;) {
                                 if (j->fields_hash_table_index >= m) {
                                         /* Reached the end of the hash table, go to the next file. */
@@ -3123,8 +3155,10 @@ _public_ int sd_journal_enumerate_fields(sd_journal *j, const char **field) {
                         if (of == f)
                                 break;
 
+                        header = journal_file_header(of);
+
                         /* Skip this file it didn't have any fields indexed */
-                        if (JOURNAL_HEADER_CONTAINS(of->header, n_fields) && le64toh(of->header->n_fields) <= 0)
+                        if (JOURNAL_HEADER_CONTAINS(header, n_fields) && le64toh(header->n_fields) <= 0)
                                 continue;
 
                         r = journal_file_find_field_object_with_hash(of, o->field.payload, sz, le64toh(o->field.hash), NULL, NULL);

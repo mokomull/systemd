@@ -189,14 +189,14 @@ static bool check_compressed(uint64_t compress_threshold, uint64_t data_size) {
 
         /* We have to partially reimplement some of the dump logic, because the normal next_entry does the
          * decompression for us. */
-        p = le64toh(f->header->header_size);
+        p = le64toh(journal_file_to_binary(f)->header->header_size);
         for (;;) {
                 r = journal_file_move_to_object(f, OBJECT_UNUSED, p, &o);
                 assert_se(r == 0);
                 if (o->object.type == OBJECT_DATA)
                         break;
 
-                assert_se(p < le64toh(f->header->tail_object_offset));
+                assert_se(p < le64toh(journal_file_to_binary(f)->header->tail_object_offset));
                 p = p + ALIGN64(le64toh(o->object.size));
         }
 

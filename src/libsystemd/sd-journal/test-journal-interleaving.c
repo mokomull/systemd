@@ -199,19 +199,21 @@ static void test_skip(void (*setup)(void)) {
 static void test_sequence_numbers(void) {
 
         char t[] = "/var/tmp/journal-seq-XXXXXX";
-        JournalFile *one, *two;
+        JournalFile *jf_one, *jf_two;
+        BinaryJournalFile *one, *two;
         uint64_t seqnum = 0;
         sd_id128_t seqnum_id;
 
         mkdtemp_chdir_chattr(t);
 
         assert_se(journal_file_open(-1, "one.journal", O_RDWR|O_CREAT, 0644,
-                                    true, (uint64_t) -1, false, NULL, NULL, NULL, NULL, &one) == 0);
+                                    true, (uint64_t) -1, false, NULL, NULL, NULL, NULL, &jf_one) == 0);
+        one = journal_file_to_binary(jf_one);
 
-        append_number(one, 1, &seqnum);
+        append_number(jf_one, 1, &seqnum);
         printf("seqnum=%"PRIu64"\n", seqnum);
         assert_se(seqnum == 1);
-        append_number(one, 2, &seqnum);
+        append_number(jf_one, 2, &seqnum);
         printf("seqnum=%"PRIu64"\n", seqnum);
         assert_se(seqnum == 2);
 
@@ -223,7 +225,8 @@ static void test_sequence_numbers(void) {
         memcpy(&seqnum_id, &one->header->seqnum_id, sizeof(sd_id128_t));
 
         assert_se(journal_file_open(-1, "two.journal", O_RDWR|O_CREAT, 0644,
-                                    true, (uint64_t) -1, false, NULL, NULL, NULL, one, &two) == 0);
+                                    true, (uint64_t) -1, false, NULL, NULL, NULL, jf_one, &jf_two) == 0);
+        two = journal_file_to_binary(jf_two);
 
         assert_se(two->header->state == STATE_ONLINE);
         assert_se(!sd_id128_equal(two->header->file_id, one->header->file_id));
@@ -231,41 +234,42 @@ static void test_sequence_numbers(void) {
         assert_se(sd_id128_equal(one->header->boot_id, one->header->boot_id));
         assert_se(sd_id128_equal(one->header->seqnum_id, one->header->seqnum_id));
 
-        append_number(two, 3, &seqnum);
+        append_number(jf_two, 3, &seqnum);
         printf("seqnum=%"PRIu64"\n", seqnum);
         assert_se(seqnum == 3);
-        append_number(two, 4, &seqnum);
+        append_number(jf_two, 4, &seqnum);
         printf("seqnum=%"PRIu64"\n", seqnum);
         assert_se(seqnum == 4);
 
-        test_close(two);
+        test_close(jf_two);
 
-        append_number(one, 5, &seqnum);
+        append_number(jf_one, 5, &seqnum);
         printf("seqnum=%"PRIu64"\n", seqnum);
         assert_se(seqnum == 5);
 
-        append_number(one, 6, &seqnum);
+        append_number(jf_one, 6, &seqnum);
         printf("seqnum=%"PRIu64"\n", seqnum);
         assert_se(seqnum == 6);
 
-        test_close(one);
+        test_close(jf_one);
 
         /* restart server */
         seqnum = 0;
 
         assert_se(journal_file_open(-1, "two.journal", O_RDWR, 0,
-                                    true, (uint64_t) -1, false, NULL, NULL, NULL, NULL, &two) == 0);
+                                    true, (uint64_t) -1, false, NULL, NULL, NULL, NULL, &jf_two) == 0);
+        two = journal_file_to_binary(jf_two);
 
         assert_se(sd_id128_equal(two->header->seqnum_id, seqnum_id));
 
-        append_number(two, 7, &seqnum);
+        append_number(jf_two, 7, &seqnum);
         printf("seqnum=%"PRIu64"\n", seqnum);
         assert_se(seqnum == 5);
 
         /* So..., here we have the same seqnum in two files with the
          * same seqnum_id. */
 
-        test_close(two);
+        test_close(jf_two);
 
         log_info("Done...");
 

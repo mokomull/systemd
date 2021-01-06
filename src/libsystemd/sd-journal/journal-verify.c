@@ -110,7 +110,7 @@ static void flush_progress(void) {
                 log_error_errno(error, OFSfmt": " _fmt, (uint64_t)_offset, ##__VA_ARGS__); \
         } while (0)
 
-static int journal_file_object_verify(JournalFile *f, uint64_t offset, Object *o) {
+static int journal_file_object_verify(BinaryJournalFile *f, uint64_t offset, Object *o) {
         uint64_t i;
 
         assert(f);
@@ -165,9 +165,11 @@ static int journal_file_object_verify(JournalFile *f, uint64_t offset, Object *o
                                 return r;
                         }
 
-                        h2 = journal_file_hash_data(f, b, b_size);
+                        h2 = journal_file_hash_data(&f->journal_file, b, b_size);
                 } else
-                        h2 = journal_file_hash_data(f, o->data.payload, le64toh(o->object.size) - offsetof(Object, data.payload));
+                        h2 = journal_file_hash_data(&f->journal_file,
+                                                    o->data.payload,
+                                                    le64toh(o->object.size) - offsetof(Object, data.payload));
 
                 if (h1 != h2) {
                         error(offset, "Invalid hash (%08"PRIx64" vs. %08"PRIx64, h1, h2);
@@ -399,7 +401,7 @@ static int contains_uint64(MMapCache *m, MMapFileDescriptor *f, uint64_t n, uint
 }
 
 static int entry_points_to_data(
-                JournalFile *f,
+                BinaryJournalFile *f,
                 MMapFileDescriptor *cache_entry_fd,
                 uint64_t n_entries,
                 uint64_t entry_p,
@@ -418,7 +420,7 @@ static int entry_points_to_data(
                 return -EBADMSG;
         }
 
-        r = journal_file_move_to_object(f, OBJECT_ENTRY, entry_p, &o);
+        r = journal_file_move_to_object(&f->journal_file, OBJECT_ENTRY, entry_p, &o);
         if (r < 0)
                 return r;
 
@@ -445,7 +447,7 @@ static int entry_points_to_data(
         while (i < n) {
                 uint64_t m, u;
 
-                r = journal_file_move_to_object(f, OBJECT_ENTRY_ARRAY, a, &o);
+                r = journal_file_move_to_object(&f->journal_file, OBJECT_ENTRY_ARRAY, a, &o);
                 if (r < 0)
                         return r;
 
@@ -485,7 +487,7 @@ static int entry_points_to_data(
 }
 
 static int verify_data(
-                JournalFile *f,
+                BinaryJournalFile *f,
                 Object *o, uint64_t p,
                 MMapFileDescriptor *cache_entry_fd, uint64_t n_entries,
                 MMapFileDescriptor *cache_entry_array_fd, uint64_t n_entry_arrays) {
@@ -532,7 +534,7 @@ static int verify_data(
                         return -EBADMSG;
                 }
 
-                r = journal_file_move_to_object(f, OBJECT_ENTRY_ARRAY, a, &o);
+                r = journal_file_move_to_object(&f->journal_file, OBJECT_ENTRY_ARRAY, a, &o);
                 if (r < 0)
                         return r;
 
@@ -557,7 +559,7 @@ static int verify_data(
                                 return r;
 
                         /* Pointer might have moved, reposition */
-                        r = journal_file_move_to_object(f, OBJECT_ENTRY_ARRAY, a, &o);
+                        r = journal_file_move_to_object(&f->journal_file, OBJECT_ENTRY_ARRAY, a, &o);
                         if (r < 0)
                                 return r;
                 }
@@ -569,7 +571,7 @@ static int verify_data(
 }
 
 static int verify_hash_table(
-                JournalFile *f,
+                BinaryJournalFile *f,
                 MMapFileDescriptor *cache_data_fd, uint64_t n_data,
                 MMapFileDescriptor *cache_entry_fd, uint64_t n_entries,
                 MMapFileDescriptor *cache_entry_array_fd, uint64_t n_entry_arrays,
@@ -589,7 +591,7 @@ static int verify_hash_table(
         if (n <= 0)
                 return 0;
 
-        r = journal_file_map_data_hash_table(f);
+        r = journal_file_map_data_hash_table(&f->journal_file);
         if (r < 0)
                 return log_error_errno(r, "Failed to map data hash table: %m");
 
@@ -609,7 +611,7 @@ static int verify_hash_table(
                                 return -EBADMSG;
                         }
 
-                        r = journal_file_move_to_object(f, OBJECT_DATA, p, &o);
+                        r = journal_file_move_to_object(&f->journal_file, OBJECT_DATA, p, &o);
                         if (r < 0)
                                 return r;
 
@@ -641,7 +643,7 @@ static int verify_hash_table(
         return 0;
 }
 
-static int data_object_in_hash_table(JournalFile *f, uint64_t hash, uint64_t p) {
+static int data_object_in_hash_table(BinaryJournalFile *f, uint64_t hash, uint64_t p) {
         uint64_t n, h, q;
         int r;
         assert(f);
@@ -650,7 +652,7 @@ static int data_object_in_hash_table(JournalFile *f, uint64_t hash, uint64_t p) 
         if (n <= 0)
                 return 0;
 
-        r = journal_file_map_data_hash_table(f);
+        r = journal_file_map_data_hash_table(&f->journal_file);
         if (r < 0)
                 return log_error_errno(r, "Failed to map data hash table: %m");
 
@@ -663,7 +665,7 @@ static int data_object_in_hash_table(JournalFile *f, uint64_t hash, uint64_t p) 
                 if (p == q)
                         return 1;
 
-                r = journal_file_move_to_object(f, OBJECT_DATA, q, &o);
+                r = journal_file_move_to_object(&f->journal_file, OBJECT_DATA, q, &o);
                 if (r < 0)
                         return r;
 
@@ -674,7 +676,7 @@ static int data_object_in_hash_table(JournalFile *f, uint64_t hash, uint64_t p) 
 }
 
 static int verify_entry(
-                JournalFile *f,
+                BinaryJournalFile *f,
                 Object *o, uint64_t p,
                 MMapFileDescriptor *cache_data_fd, uint64_t n_data) {
 
@@ -698,7 +700,7 @@ static int verify_entry(
                         return -EBADMSG;
                 }
 
-                r = journal_file_move_to_object(f, OBJECT_DATA, q, &u);
+                r = journal_file_move_to_object(&f->journal_file, OBJECT_DATA, q, &u);
                 if (r < 0)
                         return r;
 
@@ -720,7 +722,7 @@ static int verify_entry(
 }
 
 static int verify_entry_array(
-                JournalFile *f,
+                BinaryJournalFile *f,
                 MMapFileDescriptor *cache_data_fd, uint64_t n_data,
                 MMapFileDescriptor *cache_entry_fd, uint64_t n_entries,
                 MMapFileDescriptor *cache_entry_array_fd, uint64_t n_entry_arrays,
@@ -755,7 +757,7 @@ static int verify_entry_array(
                         return -EBADMSG;
                 }
 
-                r = journal_file_move_to_object(f, OBJECT_ENTRY_ARRAY, a, &o);
+                r = journal_file_move_to_object(&f->journal_file, OBJECT_ENTRY_ARRAY, a, &o);
                 if (r < 0)
                         return r;
 
@@ -781,7 +783,7 @@ static int verify_entry_array(
                                 return -EBADMSG;
                         }
 
-                        r = journal_file_move_to_object(f, OBJECT_ENTRY, p, &o);
+                        r = journal_file_move_to_object(&f->journal_file, OBJECT_ENTRY, p, &o);
                         if (r < 0)
                                 return r;
 
@@ -790,7 +792,7 @@ static int verify_entry_array(
                                 return r;
 
                         /* Pointer might have moved, reposition */
-                        r = journal_file_move_to_object(f, OBJECT_ENTRY_ARRAY, a, &o);
+                        r = journal_file_move_to_object(&f->journal_file, OBJECT_ENTRY_ARRAY, a, &o);
                         if (r < 0)
                                 return r;
                 }
@@ -801,11 +803,12 @@ static int verify_entry_array(
         return 0;
 }
 
-int journal_file_verify(
-                JournalFile *f,
+int journal_file_binary_verify(
+                JournalFile *jf,
                 const char *key,
                 usec_t *first_contained, usec_t *last_validated, usec_t *last_contained,
                 bool show_progress) {
+        BinaryJournalFile *f = journal_file_to_binary(jf);
         int r;
         Object *o;
         uint64_t p = 0, last_epoch = 0, last_tag_realtime = 0, last_sealed_realtime = 0;
@@ -907,7 +910,7 @@ int journal_file_verify(
                 if (show_progress)
                         draw_progress(scale_progress(0x7FFF, p, le64toh(f->header->tail_object_offset)), &last_usec);
 
-                r = journal_file_move_to_object(f, OBJECT_UNUSED, p, &o);
+                r = journal_file_move_to_object(&f->journal_file, OBJECT_UNUSED, p, &o);
                 if (r < 0) {
                         error(p, "Invalid object");
                         goto fail;
@@ -1131,7 +1134,7 @@ int journal_file_verify(
                                         q = last_tag;
 
                                 while (q <= p) {
-                                        r = journal_file_move_to_object(f, OBJECT_UNUSED, q, &o);
+                                        r = journal_file_move_to_object(&f->journal_file, OBJECT_UNUSED, q, &o);
                                         if (r < 0)
                                                 goto fail;
 
@@ -1143,7 +1146,7 @@ int journal_file_verify(
                                 }
 
                                 /* Position might have changed, let's reposition things */
-                                r = journal_file_move_to_object(f, OBJECT_UNUSED, p, &o);
+                                r = journal_file_move_to_object(&f->journal_file, OBJECT_UNUSED, p, &o);
                                 if (r < 0)
                                         goto fail;
 
@@ -1302,10 +1305,10 @@ fail:
                 flush_progress();
 
         log_error("File corruption detected at %s:"OFSfmt" (of %llu bytes, %"PRIu64"%%).",
-                  f->path,
+                  f->journal_file.path,
                   p,
-                  (unsigned long long) f->last_stat.st_size,
-                  100 * p / f->last_stat.st_size);
+                  (unsigned long long) f->journal_file.last_stat.st_size,
+                  100 * p / f->journal_file.last_stat.st_size);
 
         if (data_fd >= 0)
                 safe_close(data_fd);
@@ -1326,4 +1329,12 @@ fail:
                 mmap_cache_free_fd(f->mmap, cache_entry_array_fd);
 
         return r;
+}
+
+int journal_file_verify(
+                JournalFile *jf,
+                const char *key,
+                usec_t *first_contained, usec_t *last_validated, usec_t *last_contained,
+                bool show_progress) {
+        return jf->ops->verify(jf, key, first_contained, last_validated, last_contained, show_progress);
 }

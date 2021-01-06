@@ -56,34 +56,131 @@ typedef enum OfflineState {
         OFFLINE_DONE
 } OfflineState;
 
+struct JournalFile;
+
+typedef struct JournalFileOps {
+        int (*append_data)(
+                struct JournalFile *jf,
+                const void *data, uint64_t size,
+                Object **ret, uint64_t *ret_offset);
+        int (*append_object)(
+                struct JournalFile *f,
+                ObjectType type,
+                uint64_t size,
+                Object **ret,
+                uint64_t *ret_offset);
+        int (*commit_entry)(
+                struct JournalFile *f,
+                Object *o,
+                uint64_t offset);
+        int (*link_entry_into_array)(
+                struct JournalFile *f,
+                le64_t *first,
+                le64_t *idx,
+                uint64_t p);
+        int (*link_entry_item)(
+                struct JournalFile *f,
+                Object *o,
+                uint64_t offset,
+                uint64_t i);
+        bool (*rotate_suggested)(struct JournalFile *f, usec_t max_file_usec);
+        int (*verify)(
+                struct JournalFile *jf,
+                const char *key,
+                usec_t *first_contained, usec_t *last_validated, usec_t *last_contained,
+                bool show_progress);
+
+        int (*next_entry)(
+                struct JournalFile *f,
+                uint64_t p,
+                direction_t direction,
+                Object **ret, uint64_t *ret_offset);
+        int (*next_entry_for_data)(
+                struct JournalFile *f,
+                Object *o, uint64_t p,
+                uint64_t data_offset,
+                direction_t direction,
+                Object **ret, uint64_t *ret_offset);
+
+        int (*move_to)(
+                struct JournalFile *jf,
+                ObjectType type,
+                bool keep_always,
+                uint64_t offset,
+                uint64_t size,
+                void **ret);
+        int (*move_to_object)(
+                struct JournalFile *jf,
+                ObjectType type,
+                uint64_t offset,
+                Object **ret);
+        int (*move_to_entry_by_seqnum)(
+                struct JournalFile *f, uint64_t seqnum, direction_t direction, Object **ret, uint64_t *offset);
+        int (*move_to_entry_by_realtime)(
+                struct JournalFile *f, uint64_t realtime, direction_t direction, Object **ret, uint64_t *offset);
+        int (*move_to_entry_by_monotonic)(
+                struct JournalFile *f,
+                sd_id128_t boot_id,
+                uint64_t monotonic,
+                direction_t direction,
+                Object **ret,
+                uint64_t *offset);
+        int (*move_to_entry_by_offset_for_data)(
+                struct JournalFile *f,
+                uint64_t data_offset,
+                uint64_t p,
+                direction_t direction,
+                Object **ret, uint64_t *ret_offset);
+        int (*move_to_entry_by_seqnum_for_data)(
+                struct JournalFile *f,
+                uint64_t data_offset,
+                uint64_t seqnum,
+                direction_t direction,
+                Object **ret,
+                uint64_t *offset);
+        int (*move_to_entry_by_realtime_for_data)(
+                struct JournalFile *f,
+                uint64_t data_offset,
+                uint64_t realtime,
+                direction_t direction,
+                Object **ret,
+                uint64_t *offset);
+        int (*move_to_entry_by_monotonic_for_data)(
+                struct JournalFile *f,
+                uint64_t data_offset,
+                sd_id128_t boot_id,
+                uint64_t monotonic,
+                direction_t direction,
+                Object **ret,
+                uint64_t *offset);
+
+        int (*find_data_object_with_hash)(
+                struct JournalFile *f,
+                const void *data, uint64_t size, uint64_t hash,
+                Object **ret, uint64_t *ret_offset);
+
+        Header* (*header)(struct JournalFile *jf);
+        bool (*check_sigbus)(struct JournalFile *f);
+        void (*post_change)(struct JournalFile *f);
+        void (*sync)(struct JournalFile *f);
+        void (*sync_directory)(struct JournalFile *f);
+        void (*close)(struct JournalFile *f);
+} JournalFileOps;
+
 typedef struct JournalFile {
-        int fd;
-        MMapFileDescriptor *cache_fd;
-
-        mode_t mode;
-
-        int flags;
-        bool writable:1;
-        bool compress_xz:1;
-        bool compress_lz4:1;
-        bool compress_zstd:1;
-        bool seal:1;
-        bool defrag_on_close:1;
-        bool close_fd:1;
-        bool archive:1;
-        bool keyed_hash:1;
+        const JournalFileOps *ops;
 
         direction_t last_direction;
         LocationType location_type;
         uint64_t last_n_entries;
 
-        char *path;
-        struct stat last_stat;
-        usec_t last_stat_usec;
+        mode_t mode;
+        int flags;
 
-        Header *header;
-        HashItem *data_hash_table;
-        HashItem *field_hash_table;
+        int fd;
+        char *path;
+
+        MMapCache *mmap;
 
         uint64_t current_offset;
         uint64_t current_seqnum;
@@ -92,24 +189,53 @@ typedef struct JournalFile {
         sd_id128_t current_boot_id;
         uint64_t current_xor_hash;
 
-        JournalMetrics metrics;
-        MMapCache *mmap;
+        pthread_t offline_thread;
+        volatile OfflineState offline_state;
 
         sd_event_source *post_change_timer;
         usec_t post_change_timer_period;
 
-        OrderedHashmap *chain_cache;
+        struct stat last_stat;
+        usec_t last_stat_usec;
 
-        pthread_t offline_thread;
-        volatile OfflineState offline_state;
+        HashItem *field_hash_table;
 
-        unsigned last_seen_generation;
-
-        uint64_t compress_threshold_bytes;
 #if HAVE_COMPRESSION
         void *compress_buffer;
         size_t compress_buffer_size;
 #endif
+
+        unsigned last_seen_generation;
+
+        bool writable:1;
+        bool archive:1;
+        bool close_fd:1;
+        bool defrag_on_close:1;
+} JournalFile;
+
+typedef struct BinaryJournalFile {
+        JournalFile journal_file;
+
+        MMapFileDescriptor *cache_fd;
+
+        mode_t mode;
+
+        int flags;
+        bool compress_xz:1;
+        bool compress_lz4:1;
+        bool compress_zstd:1;
+        bool seal:1;
+        bool keyed_hash:1;
+
+        Header *header;
+        HashItem *data_hash_table;
+
+        JournalMetrics metrics;
+        MMapCache *mmap;
+
+        OrderedHashmap *chain_cache;
+
+        uint64_t compress_threshold_bytes;
 
 #if HAVE_GCRYPT
         gcry_md_hd_t hmac;
@@ -127,7 +253,19 @@ typedef struct JournalFile {
         void *fsprg_seed;
         size_t fsprg_seed_size;
 #endif
-} JournalFile;
+} BinaryJournalFile;
+
+static inline BinaryJournalFile* journal_file_to_binary(JournalFile *f) {
+        return container_of(f, BinaryJournalFile, journal_file);
+}
+
+static inline Header* journal_file_header(JournalFile *f) {
+        return f->ops->header(f);
+}
+
+static inline const Header* journal_file_header_const(const JournalFile* f) {
+        return f->ops->header((JournalFile*) f);
+}
 
 int journal_file_open(
                 int fd,
@@ -264,11 +402,6 @@ bool journal_file_rotate_suggested(JournalFile *f, usec_t max_file_usec);
 
 int journal_file_map_data_hash_table(JournalFile *f);
 int journal_file_map_field_hash_table(JournalFile *f);
-
-static inline bool JOURNAL_FILE_COMPRESS(JournalFile *f) {
-        assert(f);
-        return f->compress_xz || f->compress_lz4 || f->compress_zstd;
-}
 
 uint64_t journal_file_hash_data(JournalFile *f, const void *data, size_t sz);
 
