@@ -127,6 +127,8 @@ option('remote', type : 'combo', choices : ['auto', 'true', 'false'],
        description : 'support for "journal over the network"')
 option('create-log-dirs', type : 'boolean',
        description : 'create /var/log/journal{,/remote}')
+option('journal-rocksdb', type : 'boolean',
+       description : 'enable RocksDB backend for journald')
 option('nss-myhostname', type : 'boolean',
        description : 'install nss-myhostname module')
 option('nss-mymachines', type : 'combo', choices : ['auto', 'true', 'false'],
@@ -355,6 +357,8 @@ option('glib', type : 'combo', choices : ['auto', 'true', 'false'],
        description : 'libglib support (for tests only)')
 option('dbus', type : 'combo', choices : ['auto', 'true', 'false'],
        description : 'libdbus support (for tests only)')
+option('rocksdb', type : 'combo', choices : ['auto', 'true', 'false'],
+       description : 'rocksdb library support')
 
 option('gnu-efi', type : 'combo', choices : ['auto', 'true', 'false'],
        description : 'gnu-efi support for sd-boot')

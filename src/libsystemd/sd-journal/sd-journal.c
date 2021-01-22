@@ -1333,7 +1333,15 @@ static int add_any_file(
         }
 
         r = stat_verify_regular(&st);
-        if (r < 0) {
+        if (r == -EISDIR) {
+                struct stat st2;
+
+                if (fstatat(fd, "IDENTITY", &st2, 0) != 0 || !S_ISREG(st2.st_mode)) {
+                        log_debug_errno(
+                                r, "Refusing to open '%s', as it is a directory that is not RocksDB.", path);
+                        goto finish;
+                }
+        } else if (r < 0) {
                 log_debug_errno(r, "Refusing to open '%s', as it is not a regular file.", path);
                 goto finish;
         }
@@ -1539,11 +1547,19 @@ static bool dirent_is_journal_file(const struct dirent *de) {
 
         /* Returns true if the specified directory entry looks like a journal file we might be interested in */
 
-        if (!IN_SET(de->d_type, DT_REG, DT_LNK, DT_UNKNOWN))
+        if (!IN_SET(de->d_type, DT_REG, DT_DIR, DT_LNK, DT_UNKNOWN))
                 return false;
 
-        return endswith(de->d_name, ".journal") ||
-                endswith(de->d_name, ".journal~");
+        if (endswith(de->d_name, ".journal") || endswith(de->d_name, ".journal~")) {
+                if (de->d_type == DT_DIR) {
+                        const char *identity = strjoina(de->d_name, "/IDENTITY");
+                        struct stat st;
+                        return stat(identity, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG;
+                } else {
+                        return true;
+                }
+        }
+        return false;
 }
 
 static bool dirent_is_journal_subdir(const struct dirent *de) {

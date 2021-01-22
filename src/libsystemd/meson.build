@@ -33,6 +33,22 @@ if conf.get('HAVE_GCRYPT') == 1
                 'sd-journal/journal-authenticate.h')
 endif
 
+if conf.get('HAVE_ROCKSDB') == 1
+        sd_journal_rocksdb = static_library(
+                'journal-rocksdb-shim',
+                files(
+                        'sd-journal/journal-file-rocksdb-shim.cpp',
+                        'sd-journal/journal-file-rocksdb-shim.h'),
+                include_directories : includes,
+                dependencies : rocksdb
+        )
+        sd_journal_sources += files(
+                'sd-journal/journal-file-rocksdb.c',
+                'sd-journal/journal-file-rocksdb.h')
+else
+        sd_journal_rocksdb = []
+endif
+
 audit_type_includes = [config_h,
                        missing_audit_h,
                        'linux/audit.h']
@@ -168,7 +184,7 @@ libsystemd_static = static_library(
         libsystemd_sources,
         install : false,
         include_directories : libsystemd_includes,
-        link_with : libbasic,
+        link_with : [libbasic, sd_journal_rocksdb],
         dependencies : [threads,
                         librt],
         c_args : libsystemd_c_args)

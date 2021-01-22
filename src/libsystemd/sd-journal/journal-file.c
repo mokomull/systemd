@@ -23,6 +23,7 @@
 #include "journal-authenticate.h"
 #include "journal-def.h"
 #include "journal-file.h"
+#include "journal-file-rocksdb.h"
 #include "journal-file-binary.h"
 #include "journal-verify.h"
 #include "lookup3.h"
@@ -1293,7 +1294,13 @@ int journal_file_open(
                 Set *deferred_closes,
                 JournalFile *jtemplate,
                 JournalFile **ret) {
-        return journal_file_open_binary(fd, fname, flags, mode, compress, compress_threshold_bytes, seal, metrics, mmap_cache, deferred_closes, jtemplate, ret);
+        int r;
+        r = journal_file_rocksdb_open(fd, fname, flags, mode, seal, metrics, jtemplate, ret);
+        // TODO(mmullins): unify this with the invocations below...
+        if (!r && (*ret)->writable) {
+                journal_file_refresh_header(*ret);
+        }
+        return r;
 }
 
 int journal_file_archive(JournalFile *f) {

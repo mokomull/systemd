@@ -11,6 +11,7 @@
 #include "journal-internal.h"
 #include "macro.h"
 #include "path-util.h"
+#include "rm-rf.h"
 #include "string-util.h"
 
 int main(int argc, char *argv[]) {
@@ -59,8 +60,7 @@ int main(int argc, char *argv[]) {
 
         (void) journal_file_close(new_journal);
 
-        unlink(fn);
-        assert_se(rmdir(dn) == 0);
+        assert_se(rm_rf(dn, REMOVE_ROOT | REMOVE_PHYSICAL) >= 0);
 
         return 0;
 }

@@ -1344,6 +1344,18 @@ else
 endif
 conf.set10('HAVE_DBUS', have)
 
+want_rocksdb = get_option('rocksdb')
+if want_rocksdb != 'false' and not skip_deps
+        rocksdb = dependency('rocksdb',
+                             version : '>= 6.13.2',
+                             required : want_rocksdb == 'true')
+        have = rocksdb.found()
+else
+        have = false
+        rocksdb = []
+endif
+conf.set10('HAVE_ROCKSDB', have)
+
 default_dnssec = get_option('default-dnssec')
 if skip_deps
         default_dnssec = 'no'
@@ -1477,6 +1489,17 @@ else
         have = false
 endif
 conf.set10('ENABLE_REMOTE', have)
+
+want_rocksdb = get_option('journal-rocksdb')
+if want_rocksdb != 'false'
+        have = conf.get('HAVE_ROCKSDB')
+        if want_rocksdb == 'true' and not have
+                error('RocksDB support was requested, but dependency is not available')
+        endif
+else
+        have = false
+endif
+conf.set10('ENABLE_JOURNAL_ROCKSDB', have)
 
 foreach term : ['analyze',
                 'backlight',
@@ -3802,6 +3825,7 @@ foreach tuple : [
         ['systemd-analyze',  conf.get('ENABLE_ANALYZE') == 1],
         ['fexecve'],
         ['standalone-binaries',   get_option('standalone-binaries')],
+        ['journal-rocksdb'],
 ]
 
         if tuple.length() >= 2
